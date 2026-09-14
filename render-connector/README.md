@@ -1,4 +1,4 @@
-# MaritimeScope Open Waters aiscast Bridge v8
+# MaritimeScope Open Waters aiscast Bridge v9
 
 This Render connector keeps one server-side WebSocket connection to Open Waters aiscast and forwards normalized vessel updates to the InfinityFree PHP site through `vessel-sync.php`. It supports both anonymous Open Waters access and an optional personal token.
 
