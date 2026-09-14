@@ -5,7 +5,9 @@ const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT || 10000);
 const AIS_PROVIDER = String(process.env.AIS_PROVIDER || 'openwaters').trim().toLowerCase();
-const AIS_KEY = String(process.env.AISSTREAM_API_KEY || process.env.OPENWATERS_API_KEY || '').trim();
+const OPENWATERS_API_KEY = String(process.env.OPENWATERS_API_KEY || '').trim();
+const AISSTREAM_API_KEY = String(process.env.AISSTREAM_API_KEY || '').trim();
+const AIS_KEY = AIS_PROVIDER === 'openwaters' ? OPENWATERS_API_KEY : AISSTREAM_API_KEY;
 const BRIDGE_TOKEN = String(process.env.BRIDGE_TOKEN || '').trim();
 const APP_URL = String(process.env.APP_URL || '').replace(/\/$/, '');
 const INGEST_KEY = String(process.env.AIS_INGEST_KEY || '').trim();
@@ -33,6 +35,8 @@ let lastSubscriptionAt = null;
 let successfulSubscriptions = 0;
 let totalConnectAttempts = 0;
 let lastConnectStartedAt = null;
+let openWatersAnonymousFallback = false;
+let openWatersAuthFallbackAt = null;
 let ingestInProgress = false;
 let ingestSuccesses = 0;
 let ingestFailures = 0;
@@ -243,14 +247,21 @@ function handleClose(code,reasonBuffer){
   const reason=Buffer.isBuffer(reasonBuffer)?reasonBuffer.toString('utf8'):String(reasonBuffer||'');
   lastClose={code,reason,at:new Date().toISOString()}; disconnectedAt=lastClose.at; socket=null;
   const retryAfter=lastHandshake?.headers?.['retry-after'];
-  const why=lastHandshake?.status===429 ? `AIS WebSocket: HTTP 429 rate/connection limit${retryAfter ? `; Retry-After=${retryAfter}`:''}` : (lastError || `AIS WebSocket closed (${code})`);
+  const combined=(reason+' '+(lastError||'')).trim();
+  if(AIS_PROVIDER==='openwaters' && AIS_KEY && /invalid token|bad token|unauthorized|401|token/i.test(combined)){
+    openWatersAnonymousFallback=true;
+    openWatersAuthFallbackAt=new Date().toISOString();
+    lastError='Open Waters token rejected; retrying anonymously';
+  }
+  const why=lastHandshake?.status===429 ? `Open Waters: HTTP 429 rate/connection limit${retryAfter ? `; Retry-After=${retryAfter}`:''}` : (lastError || `AIS WebSocket closed (${code})`);
   scheduleReconnect(why);
 }
 function connectOpenWaters(){
   if (socket && (socket.readyState===WebSocket.OPEN || socket.readyState===WebSocket.CONNECTING)) return;
   totalConnectAttempts += 1; lastConnectStartedAt=new Date().toISOString(); subscriptionConfirmed=false; compressionEnabled=null; disconnectedAt=null;
   lastHandshake={status:null,headers:{},bodySnippet:null,at:lastConnectStartedAt};
-  const url = 'wss://ais.openwaters.io/v1/stream' + (AIS_KEY ? `?key=${encodeURIComponent(AIS_KEY)}` : '');
+  const usingToken = !!AIS_KEY && !openWatersAnonymousFallback;
+  const url = 'wss://ais.openwaters.io/v1/stream' + (usingToken ? `?key=${encodeURIComponent(AIS_KEY)}` : '');
   try {
     const ws=new WebSocket(url,{perMessageDeflate:true,handshakeTimeout:15000,maxPayload:10*1024*1024}); socket=ws;
     ws.on('open',()=>{
@@ -264,7 +275,11 @@ function connectOpenWaters(){
         const d=JSON.parse(Buffer.isBuffer(data)?data.toString('utf8'):String(data));
         if(d.type==='welcome'){ compressionEnabled=true; return; }
         if(d.type==='ack'){ subscriptionConfirmed=true; reconnectAttempt=0; lastError=''; successfulSubscriptions+=1; return; }
-        if(d.type==='error'){ lastError='Open Waters: '+String(d.error||'stream error'); return; }
+        if(d.type==='error'){
+          lastError='Open Waters: '+String(d.error||'stream error');
+          if (/token|auth|key/i.test(String(d.error||'')) && AIS_KEY) { openWatersAnonymousFallback=true; openWatersAuthFallbackAt=new Date().toISOString(); }
+          return;
+        }
         if(d.type==='event'){
           lastMessageAt=new Date().toISOString(); totalMessages+=1; normalize(d);
         }
@@ -276,12 +291,12 @@ function connectOpenWaters(){
 }
 
 const app=express(); app.disable('x-powered-by'); app.use(express.json({limit:'2mb'}));
-app.get('/',(req,res)=>res.json({ok:true,version:'7.0.0',name:'MaritimeScope AIS Bridge v7',service:AIS_PROVIDER==='openwaters'?'Open Waters aiscast':'AISStream',mode:'single-connection-diagnostic-with-resilient-ingest',testMode:!ALLOW_GLOBAL_BOXES,boxes:BOXES,endpoints:['/health','/diagnostics','/vessels','/vessel','/search']}));
-app.get('/health',(req,res)=>res.json({ok:true,version:'7.0.0',ingest:{inProgress:ingestInProgress,batchSize:INGEST_BATCH_SIZE,intervalMs:INGEST_INTERVAL_MS,retries:INGEST_RETRIES,pending:pending.size,successes:ingestSuccesses,failures:ingestFailures,rowsStored:ingestRowsStored,lastIngestAt,lastIngestStatus,lastIngestError,lastIngestDetail},aisConnected:!!socket&&socket.readyState===WebSocket.OPEN,subscriptionConfirmed,compressionEnabled,lastMessageAt,connectedAt,disconnectedAt,totalMessages,cacheSize:cache.size,reconnectAttempt,nextReconnectAt,lastClose,lastError,boxes:BOXES,testMode:!ALLOW_GLOBAL_BOXES}));
-app.get('/diagnostics',(req,res)=>res.json({ok:true,version:'7.0.0',time:new Date().toISOString(),node:process.version,platform:process.platform,instance:{renderService:process.env.RENDER_SERVICE_NAME||null,renderInstance:process.env.RENDER_INSTANCE_ID||null},config:{apiKeyConfigured:!!AIS_KEY,apiKeyFingerprint:AIS_KEY?crypto.createHash('sha256').update(AIS_KEY).digest('hex').slice(0,12):null,bridgeTokenConfigured:!!BRIDGE_TOKEN,appUrlConfigured:!!APP_URL,ingestKeyConfigured:!!INGEST_KEY,allowGlobalBoxes:ALLOW_GLOBAL_BOXES,boxes:BOXES,maxCache:MAX_CACHE,ingestDebug:INGEST_DEBUG},connection:{readyState:socket?socket.readyState:null,aisConnected:!!socket&&socket.readyState===WebSocket.OPEN,totalConnectAttempts,lastConnectStartedAt,connectedAt,disconnectedAt,subscriptionConfirmed,successfulSubscriptions,compressionEnabled,lastSubscriptionAt,reconnectAttempt,nextReconnectAt,lastClose,lastError,lastHandshake},data:{totalMessages,cacheSize:cache.size,lastMessageAt,pendingIngest:pending.size,ingest:{inProgress:ingestInProgress,batchSize:INGEST_BATCH_SIZE,intervalMs:INGEST_INTERVAL_MS,retries:INGEST_RETRIES,successes:ingestSuccesses,failures:ingestFailures,rowsStored:ingestRowsStored,lastIngestAt,lastIngestStatus,lastIngestError,lastIngestDetail}}}));
+app.get('/',(req,res)=>res.json({ok:true,version:'8.0.0',name:'MaritimeScope AIS Bridge v8',service:AIS_PROVIDER==='openwaters'?'Open Waters aiscast':'AISStream',mode:'single-connection-diagnostic-with-resilient-ingest',testMode:!ALLOW_GLOBAL_BOXES,boxes:BOXES,endpoints:['/health','/diagnostics','/vessels','/vessel','/search']}));
+app.get('/health',(req,res)=>res.json({ok:true,version:'8.0.0',ingest:{inProgress:ingestInProgress,batchSize:INGEST_BATCH_SIZE,intervalMs:INGEST_INTERVAL_MS,retries:INGEST_RETRIES,pending:pending.size,successes:ingestSuccesses,failures:ingestFailures,rowsStored:ingestRowsStored,lastIngestAt,lastIngestStatus,lastIngestError,lastIngestDetail},aisConnected:!!socket&&socket.readyState===WebSocket.OPEN,subscriptionConfirmed,compressionEnabled,lastMessageAt,connectedAt,disconnectedAt,totalMessages,cacheSize:cache.size,reconnectAttempt,nextReconnectAt,lastClose,lastError,boxes:BOXES,testMode:!ALLOW_GLOBAL_BOXES}));
+app.get('/diagnostics',(req,res)=>res.json({ok:true,version:'8.0.0',time:new Date().toISOString(),node:process.version,platform:process.platform,instance:{renderService:process.env.RENDER_SERVICE_NAME||null,renderInstance:process.env.RENDER_INSTANCE_ID||null},config:{provider:AIS_PROVIDER,apiKeyConfigured:!!AIS_KEY,apiKeyFingerprint:AIS_KEY?crypto.createHash('sha256').update(AIS_KEY).digest('hex').slice(0,12):null,bridgeTokenConfigured:!!BRIDGE_TOKEN,appUrlConfigured:!!APP_URL,ingestKeyConfigured:!!INGEST_KEY,allowGlobalBoxes:ALLOW_GLOBAL_BOXES,boxes:BOXES,maxCache:MAX_CACHE,ingestDebug:INGEST_DEBUG},connection:{mode:AIS_PROVIDER==='openwaters' ? (openWatersAnonymousFallback || !AIS_KEY ? 'anonymous' : 'token') : 'token',anonymousFallback:openWatersAnonymousFallback,anonymousFallbackAt:openWatersAuthFallbackAt,readyState:socket?socket.readyState:null,aisConnected:!!socket&&socket.readyState===WebSocket.OPEN,totalConnectAttempts,lastConnectStartedAt,connectedAt,disconnectedAt,subscriptionConfirmed,successfulSubscriptions,compressionEnabled,lastSubscriptionAt,reconnectAttempt,nextReconnectAt,lastClose,lastError,lastHandshake},data:{totalMessages,cacheSize:cache.size,lastMessageAt,pendingIngest:pending.size,ingest:{inProgress:ingestInProgress,batchSize:INGEST_BATCH_SIZE,intervalMs:INGEST_INTERVAL_MS,retries:INGEST_RETRIES,successes:ingestSuccesses,failures:ingestFailures,rowsStored:ingestRowsStored,lastIngestAt,lastIngestStatus,lastIngestError,lastIngestDetail}}}));
 function matches(v,q){if(!q)return true;const x=q.toLowerCase();return [v.mmsi,v.ship_name,v.imo,v.callsign,v.destination].some(z=>String(z??'').toLowerCase().includes(x));}
-app.get('/vessels',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'';const limit=Math.max(1,Math.min(500,Number(req.query.limit)||250));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.json({ok:true,source:'AISStream via MaritimeScope bridge',vessels:rows,cacheSize:cache.size});});
+app.get('/vessels',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'';const limit=Math.max(1,Math.min(500,Number(req.query.limit)||250));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.json({ok:true,source:AIS_PROVIDER==='openwaters' ? 'Open Waters aiscast via MaritimeScope bridge' : 'AISStream via MaritimeScope bridge',vessels:rows,cacheSize:cache.size});});
 app.get('/search',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'';const limit=Math.max(1,Math.min(50,Number(req.query.limit)||10));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.json({ok:true,vessels:rows});});
 app.get('/vessel',(req,res)=>{if(!authorized(req,res))return;const mmsi=String(req.query.mmsi||'').replace(/\D/g,'');const vessel=cache.get(mmsi);if(!/^\d{9}$/.test(mmsi)||!vessel)return res.status(404).json({ok:false,error:'Vessel not currently in bridge cache'});res.json({ok:true,vessel});});
 app.get('/stats',(req,res)=>{if(!authorized(req,res))return;res.json({ok:true,cacheSize:cache.size,totalMessages,lastMessageAt,subscriptionConfirmed,pendingIngest:pending.size});});
-app.listen(PORT,'0.0.0.0',()=>{console.log(`MaritimeScope AIS bridge v7 listening on ${PORT}`);console.log(`SAFE TEST MODE: ${!ALLOW_GLOBAL_BOXES}; boxes: ${JSON.stringify(BOXES)}`);setTimeout(connectAIS,2000);});
+app.listen(PORT,'0.0.0.0',()=>{console.log(`MaritimeScope AIS bridge v8 listening on ${PORT}`);console.log(`SAFE TEST MODE: ${!ALLOW_GLOBAL_BOXES}; boxes: ${JSON.stringify(BOXES)}`);setTimeout(connectAIS,2000);});

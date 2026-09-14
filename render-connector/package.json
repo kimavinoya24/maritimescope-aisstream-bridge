@@ -1,8 +1,8 @@
 {
-  "name": "maritimescope-aisstream-bridge",
-  "version": "7.0.0",
+  "name": "maritimescope-openwaters-bridge",
+  "version": "8.0.0",
   "private": true,
-  "description": "Diagnostic single-connection AISStream bridge for MaritimeScope",
+  "description": "Open Waters aiscast bridge for MaritimeScope with anonymous/token fallback",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
