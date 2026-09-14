@@ -14,7 +14,7 @@ Required environment variables:
 - `AIS_INGEST_KEY`
 
 Optional:
-- `AIS_INGEST_PATH=/aisfeed.php`
+- `AIS_INGEST_PATH=/vessel-sync.php`
 - `AIS_BOXES=[[[0,100],[30,150]]]`
 - `ALLOW_GLOBAL_BOXES=false`
 - `MAX_CACHE=5000`
@@ -36,4 +36,8 @@ The bridge sends small batches (20 vessels by default) with `Connection: close`,
 
 
 ## v6 diagnostic ingest
-The bridge reports version 6.0.0 from `/health` and `/diagnostics`. Ingest diagnostics include HTTP status, duration, request ID, response body/headers (truncated), batch number, and retry information. Failed batches remain queued for retry. InfinityFree `aisfeed.php` writes non-secret request diagnostics to `aisfeed_debug.log`.
+The bridge reports version 7.0.0 from `/health` and `/diagnostics`. Ingest diagnostics include HTTP status, duration, request ID, response body/headers (truncated), batch number, and retry information. Failed batches remain queued for retry. InfinityFree `vessel-sync.php` writes non-secret request diagnostics to `aisfeed_debug.log`.
+
+
+## v7 Open Waters mode
+The connector now defaults to Open Waters aiscast using the native v1 stream. Anonymous access is intentionally limited to a small test box (5-10 N, 115-120 E) because Open Waters documents an anonymous 100 square-degree area cap. A personal token can raise limits but still has documented area/connection limits. Set `AIS_PROVIDER=aisstream` to use the old AISStream-compatible provider.
