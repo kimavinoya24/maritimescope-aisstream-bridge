@@ -21,7 +21,7 @@ services:
       - key: AIS_INGEST_PATH
         value: /vessel-sync.php
       - key: AIS_BOXES
-        value: '[[[0,105],[10,115]],[[5,115],[15,125]]]'
+        value: '[[[5,115],[10,120]]]'
       - key: ALLOW_GLOBAL_BOXES
         value: 'false'
       - key: MAX_CACHE
