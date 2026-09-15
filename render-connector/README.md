@@ -1,6 +1,6 @@
-# MaritimeScope Open Waters aiscast Bridge v9
+# MaritimeScope Hybrid AIS Bridge v10
 
-This Render connector keeps one server-side WebSocket connection to Open Waters aiscast and forwards normalized vessel updates to the InfinityFree PHP site through `vessel-sync.php`. It supports both anonymous Open Waters access and an optional personal token.
+This Render connector combines **Open Waters aiscast** and **AISStream** at the same time. Both server-side WebSocket streams feed one shared vessel cache. Vessels are merged by MMSI, duplicate sources are combined, and the newest valid position wins.
 
 ## Render settings
 - Root Directory: `render-connector`
@@ -8,23 +8,33 @@ This Render connector keeps one server-side WebSocket connection to Open Waters 
 - Start Command: `node server.js`
 - Plan: Free
 
-Recommended environment:
-- `AIS_PROVIDER=openwaters`
-- `OPENWATERS_API_KEY=` optional; leave blank for anonymous access
-- `APP_URL=https://your-infinityfree-domain`
-- `AIS_INGEST_KEY=...` matching PHP
-- `AIS_INGEST_PATH=/vessel-sync.php`
-- `AIS_BOXES=[[[5,115],[10,120]]]` for the safe test area
-- `ALLOW_GLOBAL_BOXES=false` during testing
+Recommended environment variables:
+- `AIS_PROVIDER=hybrid` (informational)
+- `OPENWATERS_API_KEY=` optional; blank uses Open Waters anonymous read limits
+- `AISSTREAM_API_KEY=...` required for AISStream
+- `BRIDGE_TOKEN=...` recommended
+- `AIS_BOXES=[[[0,105],[10,115]],[[5,115],[15,125]]]` for a Southeast Asia test region
+- `ALLOW_GLOBAL_BOXES=false` during initial testing
+- `MAX_CACHE=5000`
+- `AIS_PUSH_INGEST=false` because InfinityFree can block server-to-server POST requests
 
-## Authentication behavior
-Open Waters v1 supports anonymous reads. v8 therefore does **not** send an empty `key` parameter. If `OPENWATERS_API_KEY` is present, v8 uses that key. If Open Waters rejects the token as invalid, v8 automatically retries anonymously instead of getting stuck in a token-rejection loop.
+Legacy ingest variables (`APP_URL`, `AIS_INGEST_KEY`, `AIS_INGEST_PATH`, retry settings) can remain unset while pull mode is used.
 
-## Reconnect behavior
-The connector uses exponential backoff with jitter and one outbound connection. Open Waters has documented per-address connection limits, so avoid running multiple Render services for the same bridge. `snapshot:true` is requested on each subscription so the cache can rebuild after reconnects.
+## How the hybrid merge works
+1. Open Waters connects to `wss://ais.openwaters.io/v1/stream`.
+2. AISStream connects to `wss://stream.aisstream.io/v0/stream`.
+3. Both subscribe to the same configured bounding boxes.
+4. Incoming messages are normalized into the MaritimeScope vessel format.
+5. MMSI is used as the primary deduplication key.
+6. If both providers report the same vessel, the newest valid position is kept and both sources are recorded.
+7. If one provider disconnects, the other continues supplying data.
+
+Open Waters can run anonymously, while AISStream requires its server-side API key. Do not put either API key in the PHP website or browser code.
 
 ## Diagnostics
-`/health` shows provider, connection state, message count, cache size, ingest state, reconnect state and the last close/error. `/diagnostics` additionally reports whether Open Waters is operating in token or anonymous mode and whether it had to fall back from a rejected token. Secrets are never returned.
+- `/health` shows both provider connections, message counts, cache size and subscription state.
+- `/diagnostics` shows provider configuration without exposing secrets.
+- `/vessels` returns the merged vessel cache.
 
-## InfinityFree
-The PHP endpoint is `vessel-sync.php`. The bridge sends small batches with retries and `Connection: close`. Failed batches remain queued for the next interval.
+## Important
+The current default boxes are deliberately limited to Southeast Asia so the first deployment is safer and easier to diagnose. After confirming both streams work, the boxes can be expanded or rotated. Open Waters anonymous access has documented area/message limits, so do not immediately request a huge worldwide box.

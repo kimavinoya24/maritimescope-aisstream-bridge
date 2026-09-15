@@ -1,13 +1,13 @@
 services:
   - type: web
-    name: maritimescope-openwaters-bridge
+    name: maritimescope-hybrid-bridge
     runtime: node
     plan: free
     buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: AIS_PROVIDER
-        value: openwaters
+        value: hybrid
       - key: OPENWATERS_API_KEY
         sync: false
       - key: AISSTREAM_API_KEY
@@ -21,7 +21,7 @@ services:
       - key: AIS_INGEST_PATH
         value: /vessel-sync.php
       - key: AIS_BOXES
-        value: '[[[5,115],[10,120]]]'
+        value: '[[[0,105],[10,115]],[[5,115],[15,125]]]'
       - key: ALLOW_GLOBAL_BOXES
         value: 'false'
       - key: MAX_CACHE
