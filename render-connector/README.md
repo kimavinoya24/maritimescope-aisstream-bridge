@@ -1,4 +1,4 @@
-# MaritimeScope — Pelyr OPEN-AIS Render Bridge v10.7
+# MaritimeScope — Pelyr OPEN-AIS Render Bridge v10.8
 
 This connector uses **Pelyr OPEN-AIS as the only AIS provider** for MaritimeScope. It keeps the Pelyr WebSocket live stream connected and periodically enriches the cache through the Pelyr HTTPS API. The browser never receives the Pelyr key.
 
@@ -20,7 +20,10 @@ Pelyr OPEN-AIS WebSocket → Render bridge cache → MaritimeScope PHP/API
 Pelyr HTTPS `/v1/vessels` → periodic rich-detail enrichment → same cache
 
 ## Health
-`/health` reports Pelyr connection, subscription, message count, heartbeat, API refresh status and errors.
+`/health` reports Pelyr connection, subscription, message count, parsed/ignored message counts, cache size, heartbeat, API refresh status, API vessel counts, last parsed MMSI, and errors.
 
 ## WebSocket authentication
 The connector sends the Pelyr key server-side as `Authorization: Bearer <key>` during the WebSocket handshake. The key is never sent to the browser or included in the WebSocket URL.
+
+## v10.8 diagnostics
+The bridge now exposes parsed-message counters and the last parsed MMSI so a successful WebSocket connection with no cache entries can be distinguished from a parser or coverage issue. `/diagnostics` and `/stats` include `parsedMessages`, `ignoredMessages`, `apiVesselsSeen`, `apiVesselsParsed`, `lastParsedMmsi`, `lastParsedAt`, `lastFrameType`, and `lastNotice`. The first HTTPS enrichment refresh also runs shortly after startup.
