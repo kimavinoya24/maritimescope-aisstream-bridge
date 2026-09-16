@@ -1,17 +1,21 @@
 services:
   - type: web
-    name: maritimescope-hybrid-bridge
+    name: maritimescope-pelyr-bridge
     runtime: node
     plan: free
     buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: AIS_PROVIDER
-        value: hybrid
-      - key: OPENWATERS_API_KEY
+        value: pelyr
+      - key: PELYR_API_KEY
         sync: false
-      - key: AISSTREAM_API_KEY
-        sync: false
+      - key: PELYR_START_DELAY_MS
+        value: '5000'
+      - key: PELYR_429_COOLDOWN_MS
+        value: '120000'
+      - key: PELYR_API_REFRESH_MS
+        value: '90000'
       - key: BRIDGE_TOKEN
         sync: false
       - key: APP_URL

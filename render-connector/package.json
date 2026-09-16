@@ -1,8 +1,8 @@
 {
-  "name": "maritimescope-openwaters-bridge",
-  "version": "10.1.0",
+  "name": "maritimescope-pelyr-bridge",
+  "version": "10.6.0",
   "private": true,
-  "description": "Hybrid Open Waters + AISStream bridge for MaritimeScope",
+  "description": "Pelyr OPEN-AIS bridge for MaritimeScope",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
