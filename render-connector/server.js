@@ -6,13 +6,14 @@ const PORT = Number(process.env.PORT || 10000);
 const PELYR_API_KEY = String(process.env.PELYR_API_KEY || '').trim();
 const BRIDGE_TOKEN = String(process.env.BRIDGE_TOKEN || '').trim();
 
-const MAX_CACHE = Math.max(100, Number(process.env.MAX_CACHE || 5000));
-const ALLOW_GLOBAL_BOXES = String(process.env.ALLOW_GLOBAL_BOXES || 'false').toLowerCase() === 'true';
+const MAX_CACHE = Math.max(100, Number(process.env.MAX_CACHE || 10000));
+const GLOBAL_STREAM = String(process.env.GLOBAL_STREAM || 'true').toLowerCase() === 'true';
+const ALLOW_GLOBAL_BOXES = String(process.env.ALLOW_GLOBAL_BOXES || 'true').toLowerCase() === 'true';
 
 const TEST_BOXES = [[[5,115],[10,120]]];
 const PELYR_START_DELAY_MS = Math.max(1000, Number(process.env.PELYR_START_DELAY_MS || 5000));
 const PELYR_429_COOLDOWN_MS = Math.max(30000, Number(process.env.PELYR_429_COOLDOWN_MS || 120000));
-const PELYR_API_REFRESH_MS = Math.max(60000, Number(process.env.PELYR_API_REFRESH_MS || 60000));
+const PELYR_API_REFRESH_MS = Math.max(0, Number(process.env.PELYR_API_REFRESH_MS || 0));
 const PELYR_DETAIL_CACHE_MS = Math.max(30000, Number(process.env.PELYR_DETAIL_CACHE_MS || 120000));
 
 function parseBoxes() {
@@ -23,6 +24,7 @@ function parseBoxes() {
   return TEST_BOXES;
 }
 const BOXES = parseBoxes();
+const STREAM_BOXES = GLOBAL_STREAM ? null : BOXES;
 
 const cache = new Map();
 const streams = {
@@ -111,7 +113,8 @@ function connectPelyr(){
   if(s.cooldownUntil&&Date.parse(s.cooldownUntil)>Date.now())return;
   const url='wss://stream.pelyr.com/v1/stream';
   openSocket('pelyr',url,(ws,state)=>{
-    const sub={type:'subscribe',id:'live',bbox:BOXES.map(b=>({west:b[0][1],south:b[0][0],east:b[1][1],north:b[1][0]})),fields:'full',msg_types:[1,2,3,18,19]};
+    const sub={type:'subscribe',id:'live',fields:'full',msg_types:[1,2,3,18,19]};
+    if(STREAM_BOXES) sub.bbox=STREAM_BOXES.map(b=>({west:b[0][1],south:b[0][0],east:b[1][1],north:b[1][0]}));
     ws.send(JSON.stringify(sub));
     state.lastSubscriptionAt=new Date().toISOString();
   },(d,state)=>{
@@ -127,7 +130,7 @@ function connectPelyr(){
 function httpsGetJson(urlString, headers={}){return new Promise((resolve,reject)=>{let u;try{u=new URL(urlString);}catch(e){reject(e);return;}const req=require('https').request({hostname:u.hostname,port:u.port||443,path:u.pathname+u.search,method:'GET',headers:{'Accept':'application/json','User-Agent':'MaritimeScope-Pelyr-Bridge/10.7','Connection':'close',...headers}},res=>{let out='';res.setEncoding('utf8');res.on('data',c=>{if(out.length<2*1024*1024)out+=c;});res.on('end',()=>{let body=null;try{body=out?JSON.parse(out):null;}catch(e){}resolve({status:res.statusCode||0,body,raw:out,headers:res.headers});});});req.on('error',reject);req.setTimeout(20000,()=>req.destroy(new Error('Pelyr API timeout')));req.end();});}
 
 async function refreshPelyrApi(){
-  if(!PELYR_API_KEY)return;
+  if(!PELYR_API_KEY || GLOBAL_STREAM || PELYR_API_REFRESH_MS===0)return;
   const s=streams.pelyr;
   for(const b of BOXES){
     const bbox=`${b[0][1]},${b[0][0]},${b[1][1]},${b[1][0]}`;
@@ -166,11 +169,11 @@ function connectSource(){connectPelyr();}
 
 const app=express();app.disable('x-powered-by');app.use(express.json({limit:'2mb'}));
 function streamHealth(s){return {connected:s.connected,subscriptionConfirmed:s.subscriptionConfirmed,totalMessages:s.totalMessages,lastMessageAt:s.lastMessageAt,connectedAt:s.connectedAt,disconnectedAt:s.disconnectedAt,reconnectAttempt:s.reconnectAttempt,nextReconnectAt:s.nextReconnectAt,lastClose:s.lastClose,lastError:s.lastError,successfulSubscriptions:s.successfulSubscriptions,state:s.state||undefined,cooldownUntil:s.cooldownUntil||undefined,lastHandshake:s.lastHandshake,lastHeartbeat:s.lastHeartbeat,dropped:s.dropped,welcomeAt:s.welcomeAt,subscribedAt:s.subscribedAt,lastFrameType:s.lastFrameType,lastNotice:s.lastNotice,lastApiRefreshAt:s.lastApiRefreshAt,lastApiStatus:s.lastApiStatus,lastApiError:s.lastApiError,detailRequests:s.detailRequests,detailHits:s.detailHits};}
-app.get('/',(req,res)=>res.json({ok:true,version:'11.1.0',name:'MaritimeScope Pelyr AIS Bridge',providers:['Pelyr OPEN-AIS'],mode:'pelyr-live-memory',testMode:!ALLOW_GLOBAL_BOXES,boxes:BOXES,endpoints:['/health','/diagnostics','/vessels','/vessel','/search']}));
-app.get('/health',(req,res)=>res.json({ok:true,version:'11.1.0',providers:{pelyr:streamHealth(streams.pelyr)},totalMessages,cacheSize:cache.size,lastError,boxes:BOXES,testMode:!ALLOW_GLOBAL_BOXES,aisStorage:'Render in-memory only; MySQL AIS cache disabled'}));
-app.get('/diagnostics',(req,res)=>res.json({ok:true,version:'11.1.0',time:new Date().toISOString(),config:{pelyrKeyConfigured:!!PELYR_API_KEY,bridgeTokenConfigured:!!BRIDGE_TOKEN,allowGlobalBoxes:ALLOW_GLOBAL_BOXES,boxes:BOXES,maxCache:MAX_CACHE},providers:{pelyr:{...streamHealth(streams.pelyr),mode:'token',httpsApi:!!PELYR_API_KEY}},data:{totalMessages,cacheSize:cache.size}}));
+app.get('/',(req,res)=>res.json({ok:true,version:'12.0.0',name:'MaritimeScope Pelyr AIS Bridge',providers:['Pelyr OPEN-AIS'],mode:GLOBAL_STREAM?'pelyr-global-live-memory':'pelyr-regional-live-memory',globalStream:GLOBAL_STREAM,testMode:false,boxes:STREAM_BOXES,endpoints:['/health','/diagnostics','/vessels','/vessel','/search']}));
+app.get('/health',(req,res)=>res.json({ok:true,version:'12.0.0',providers:{pelyr:streamHealth(streams.pelyr)},totalMessages,cacheSize:cache.size,lastError,globalStream:GLOBAL_STREAM,boxes:STREAM_BOXES,testMode:false,aisStorage:'Render in-memory only; MySQL AIS cache disabled'}));
+app.get('/diagnostics',(req,res)=>res.json({ok:true,version:'11.1.0',time:new Date().toISOString(),config:{pelyrKeyConfigured:!!PELYR_API_KEY,bridgeTokenConfigured:!!BRIDGE_TOKEN,globalStream:GLOBAL_STREAM,allowGlobalBoxes:ALLOW_GLOBAL_BOXES,boxes:STREAM_BOXES,maxCache:MAX_CACHE},providers:{pelyr:{...streamHealth(streams.pelyr),mode:'token',httpsApi:!!PELYR_API_KEY}},data:{totalMessages,cacheSize:cache.size}}));
 function matches(v,q){if(!q)return true;const x=q.toLowerCase();return [v.mmsi,v.ship_name,v.imo,v.callsign,v.destination].some(z=>String(z??'').toLowerCase().includes(x));}
-app.get('/vessels',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'',limit=Math.max(1,Math.min(500,Number(req.query.limit)||250));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.set('Cache-Control','no-store');res.json({ok:true,source:'Pelyr OPEN-AIS live working set',providers:['Pelyr OPEN-AIS'],vessels:rows,cacheSize:cache.size,storage:'memory-only'});});
+app.get('/vessels',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'',limit=Math.max(1,Math.min(2000,Number(req.query.limit)||1500));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.set('Cache-Control','no-store');res.json({ok:true,source:'Pelyr OPEN-AIS live working set',providers:['Pelyr OPEN-AIS'],vessels:rows,cacheSize:cache.size,storage:'memory-only'});});
 app.get('/search',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'',limit=Math.max(1,Math.min(50,Number(req.query.limit)||10));res.set('Cache-Control','no-store');res.json({ok:true,vessels:Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit),storage:'memory-only'});});
 app.get('/vessel',async(req,res)=>{
   if(!authorized(req,res))return;
@@ -196,4 +199,4 @@ app.get('/vessel',async(req,res)=>{
   }
 });
 app.get('/stats',(req,res)=>{if(!authorized(req,res))return;res.json({ok:true,cacheSize:cache.size,totalMessages,pelyr:streamHealth(streams.pelyr)});});
-app.listen(PORT,'0.0.0.0',()=>{console.log(`MaritimeScope Pelyr AIS bridge v11.1 listening on ${PORT}`);console.log(`Pelyr: ${!!PELYR_API_KEY?'configured':'NOT configured'}`);console.log(`Boxes: ${JSON.stringify(BOXES)}`);setTimeout(()=>{connectPelyr();},PELYR_START_DELAY_MS); setInterval(()=>{refreshPelyrApi();},PELYR_API_REFRESH_MS); setTimeout(()=>{refreshPelyrApi();},PELYR_START_DELAY_MS+10000);});
+app.listen(PORT,'0.0.0.0',()=>{console.log(`MaritimeScope Pelyr AIS bridge v12.0 listening on ${PORT}`);console.log(`Pelyr: ${!!PELYR_API_KEY?'configured':'NOT configured'}`);console.log(`Global stream: ${GLOBAL_STREAM}`);console.log(`Boxes: ${STREAM_BOXES?JSON.stringify(STREAM_BOXES):'WORLDWIDE (no bbox)'}`);setTimeout(()=>{connectPelyr();},PELYR_START_DELAY_MS); if(PELYR_API_REFRESH_MS>0 && !GLOBAL_STREAM) setInterval(()=>{refreshPelyrApi();},PELYR_API_REFRESH_MS); if(PELYR_API_REFRESH_MS>0 && !GLOBAL_STREAM) setTimeout(()=>{refreshPelyrApi();},PELYR_START_DELAY_MS+10000);});

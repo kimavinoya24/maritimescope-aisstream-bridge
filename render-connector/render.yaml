@@ -27,6 +27,6 @@ services:
       - key: AIS_BOXES
         value: '[[[5,115],[10,120]]]'
       - key: ALLOW_GLOBAL_BOXES
-        value: 'false'
+        value: 'true'
       - key: MAX_CACHE
-        value: '5000'
+        value: '10000'

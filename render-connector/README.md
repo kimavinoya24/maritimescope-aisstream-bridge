@@ -6,8 +6,9 @@ This connector uses **Pelyr OPEN-AIS as the only AIS provider** for MaritimeScop
 - `AIS_PROVIDER=pelyr`
 - `PELYR_API_KEY=<your Pelyr key>`
 - `BRIDGE_TOKEN=<optional shared secret>`
-- `AIS_BOXES=[[[5,115],[10,120]]]`
-- `ALLOW_GLOBAL_BOXES=false`
+- `GLOBAL_STREAM=true
+AIS_BOXES=[[[5,115],[10,120]]]`
+- `ALLOW_GLOBAL_BOXES=true`
 - `MAX_CACHE=5000`
 - `AIS_PUSH_INGEST=false`
 - `PELYR_START_DELAY_MS=5000`
@@ -17,7 +18,7 @@ This connector uses **Pelyr OPEN-AIS as the only AIS provider** for MaritimeScop
 ## Data flow
 Pelyr OPEN-AIS WebSocket → Render bridge cache → MaritimeScope PHP/API
 
-Pelyr HTTPS `/v1/vessels` → periodic rich-detail enrichment → same cache
+Pelyr HTTPS `/v1/vessels/{mmsi}` → on-demand rich-detail lookup; global positions come from the WebSocket stream
 
 ## Health
 `/health` reports Pelyr connection, subscription, message count, heartbeat, API refresh status and errors.
@@ -28,3 +29,8 @@ The connector sends the Pelyr key server-side as `Authorization: Bearer <key>` d
 
 ## v10.9 storage change
 AIS vessel positions/details are no longer pushed to or read from MySQL. The Render bridge keeps only its current in-memory Pelyr working set; the PHP pages read that working set over HTTPS. MySQL remains available for user accounts, saved items, recent views, and other application data.
+
+
+## Global stream
+
+Version 12 uses the native Pelyr v1 stream with no `bbox`, which Pelyr documents as worldwide. This avoids the old fixed 5°×5° box. Global coverage is sampled/uneven, and the service documents roughly one position per vessel per minute for global coverage. The bridge keeps AIS data in Render memory only; it does not write AIS positions to MySQL.
