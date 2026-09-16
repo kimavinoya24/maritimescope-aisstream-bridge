@@ -1,4 +1,4 @@
-# MaritimeScope — Pelyr OPEN-AIS Render Bridge v10.6
+# MaritimeScope — Pelyr OPEN-AIS Render Bridge v10.7
 
 This connector uses **Pelyr OPEN-AIS as the only AIS provider** for MaritimeScope. It keeps the Pelyr WebSocket live stream connected and periodically enriches the cache through the Pelyr HTTPS API. The browser never receives the Pelyr key.
 
@@ -21,3 +21,6 @@ Pelyr HTTPS `/v1/vessels` → periodic rich-detail enrichment → same cache
 
 ## Health
 `/health` reports Pelyr connection, subscription, message count, heartbeat, API refresh status and errors.
+
+## WebSocket authentication
+The connector sends the Pelyr key server-side as `Authorization: Bearer <key>` during the WebSocket handshake. The key is never sent to the browser or included in the WebSocket URL.
