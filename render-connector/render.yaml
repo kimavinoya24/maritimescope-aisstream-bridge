@@ -15,7 +15,9 @@ services:
       - key: PELYR_429_COOLDOWN_MS
         value: '120000'
       - key: PELYR_API_REFRESH_MS
-        value: '90000'
+        value: '0'
+      - key: STATIC_REFRESH_MS
+        value: '60000'
       - key: BRIDGE_TOKEN
         sync: false
       - key: APP_URL
@@ -29,4 +31,4 @@ services:
       - key: ALLOW_GLOBAL_BOXES
         value: 'true'
       - key: MAX_CACHE
-        value: '10000'
+        value: '15000'

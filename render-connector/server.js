@@ -15,6 +15,7 @@ const PELYR_START_DELAY_MS = Math.max(1000, Number(process.env.PELYR_START_DELAY
 const PELYR_429_COOLDOWN_MS = Math.max(30000, Number(process.env.PELYR_429_COOLDOWN_MS || 120000));
 const PELYR_API_REFRESH_MS = Math.max(0, Number(process.env.PELYR_API_REFRESH_MS || 0));
 const PELYR_DETAIL_CACHE_MS = Math.max(30000, Number(process.env.PELYR_DETAIL_CACHE_MS || 120000));
+const STATIC_REFRESH_MS = Math.max(15000, Number(process.env.STATIC_REFRESH_MS || 60000));
 
 function parseBoxes() {
   try {
@@ -41,13 +42,39 @@ function etaText(eta){ if(!eta)return null; if(typeof eta==='string')return eta;
 function validIso(v){ const t=Date.parse(v||''); return Number.isFinite(t)?new Date(t).toISOString():null; }
 
 function normalizePelyr(d){
-  if(d?.type!=='position') return null;
+  if(!d || !['position','static'].includes(d.type)) return null;
   const o=d.data||{}, m=String(o.mmsi??'').replace(/\D/g,'');
   if(!/^\d{9}$/.test(m)) return null;
   const eventTime=validIso(o.rx_ts||o.ingest_ts);
-  return {mmsi:m, ship_name:cleanString(o.shipname,120), imo:cleanString(o.imo,30), callsign:cleanString(o.callsign,30), ship_type:num(o.shiptype), lat:num(o.lat), lon:num(o.lon), sog:num(o.sog), cog:num(o.cog), heading:num(o.heading), nav_status:num(o.nav_status), destination:cleanString(o.destination,120), eta:etaText(o.eta), draught:num(o.draught), length:num(o.length), beam:num(o.beam), dim_a:num(o.dim_a), dim_b:num(o.dim_b), dim_c:num(o.dim_c), dim_d:num(o.dim_d), event_time:eventTime, source:'Pelyr OPEN-AIS', message_type:String(o.msg_type??'')};
+  const type=Number(o.msg_type||0);
+  const isPosition=d.type==='position' || [1,2,3,18,19].includes(type);
+  return {
+    mmsi:m,
+    ship_name:cleanString(o.shipname,120),
+    imo:cleanString(o.imo,30),
+    callsign:cleanString(o.callsign,30),
+    ship_type:num(o.shiptype),
+    lat:isPosition?num(o.lat):null,
+    lon:isPosition?num(o.lon):null,
+    sog:isPosition?num(o.sog):null,
+    cog:isPosition?num(o.cog):null,
+    heading:isPosition?num(o.heading):null,
+    nav_status:isPosition?num(o.nav_status):null,
+    destination:cleanString(o.destination,120),
+    eta:etaText(o.eta),
+    draught:num(o.draught),
+    length:num(o.length),
+    beam:num(o.beam),
+    dim_a:num(o.dim_a),
+    dim_b:num(o.dim_b),
+    dim_c:num(o.dim_c),
+    dim_d:num(o.dim_d),
+    event_time:eventTime,
+    source:'Pelyr OPEN-AIS',
+    message_type:String(o.msg_type??''),
+    frame_type:d.type
+  };
 }
-
 function normalizePelyrApi(v){
   if(!v || v.mmsi===undefined || !v.position) return null;
   const m=String(v.mmsi).replace(/\D/g,''); if(!/^\d{9}$/.test(m)) return null;
@@ -87,7 +114,14 @@ function mergeVessel(v){
   }
 
   vessel.sources=Array.from(new Set([...(old.sources||[]),v.source]));
-  vessel.last_seen=new Date(Math.max(oldTime,newTime,Date.now())).toISOString();
+  // Only position-bearing frames advance the vessel's live last-seen timestamp.
+  // Static AIS frames (5/24) enrich identity/voyage data without making a vessel
+  // look freshly positioned when it has not sent a new coordinate.
+  if(hasPosition){
+    vessel.last_seen=new Date(Math.max(oldTime,newTime,Date.now())).toISOString();
+  } else if(!vessel.last_seen && v.event_time){
+    vessel.last_seen=v.event_time;
+  }
   vessel.primary_detail_source=Object.values(vessel.field_sources||{}).some(x=>String(x).startsWith('Pelyr'))?'Pelyr OPEN-AIS':(vessel.sources||[])[0]||v.source;
   vessel.updated_by=v.source;
   cache.set(v.mmsi,vessel);
@@ -106,6 +140,39 @@ function handleUnexpectedResponse(source,response){const s=streams[source],chunk
 if(source==='pelyr'){s.state=response.statusCode===429?'rate_limited':'handshake_rejected';s.cooldownUntil=ra?new Date(Date.now()+ra).toISOString():null;lastError=`pelyr: ${s.lastError}`;}if(ra>0&&!s.reconnectTimer){s.reconnectAttempt++;s.nextReconnectAt=new Date(Date.now()+ra).toISOString();s.reconnectTimer=setTimeout(()=>{s.reconnectTimer=null;s.nextReconnectAt=null;connectPelyr();},ra);}else scheduleReconnect(source,s.lastError);});}
 function handleClose(source,code,reasonBuffer){const s=streams[source],reason=Buffer.isBuffer(reasonBuffer)?reasonBuffer.toString('utf8'):String(reasonBuffer||'');s.lastClose={code,reason,at:new Date().toISOString()};s.disconnectedAt=s.lastClose.at;s.connected=false;s.socket=null;if(source==='pelyr'&&s.state!=='rate_limited')s.state='closed';const combined=(reason+' '+(s.lastError||'')).toLowerCase();scheduleReconnect(source,s.lastError||`WebSocket closed (${code})`);}
 function openSocket(source,url,onOpen,onMessage){const s=streams[source];if(source==='pelyr'&&s.cooldownUntil&&Date.parse(s.cooldownUntil)>Date.now())return;s.totalConnectAttempts++;s.lastConnectStartedAt=new Date().toISOString();if(source==='pelyr'){s.state='connecting';s.cooldownUntil=null;}s.subscriptionConfirmed=false;s.compressionEnabled=null;s.lastHandshake={status:null,headers:{},bodySnippet:null,at:s.lastConnectStartedAt};try{const wsOptions={perMessageDeflate:true,handshakeTimeout:15000,maxPayload:10*1024*1024};if(source==='pelyr'){wsOptions.headers={Authorization:`Bearer ${PELYR_API_KEY}`,'User-Agent':'MaritimeScope-Pelyr-Bridge/10.7'};}const ws=new WebSocket(url,wsOptions);s.socket=ws;ws.on('open',()=>{s.connected=true;if(source==='pelyr')s.state='connected';s.connectedAt=new Date().toISOString();s.lastError='';onOpen(ws,s);});ws.on('unexpected-response',(_,res)=>handleUnexpectedResponse(source,res));ws.on('message',data=>{s.lastMessageAt=new Date().toISOString();s.totalMessages++;totalMessages++;try{onMessage(JSON.parse(Buffer.isBuffer(data)?data.toString('utf8'):String(data)),s);}catch(e){s.lastError='JSON: '+e.message;}});ws.on('error',e=>{s.lastError=e?.message||String(e);if(source==='pelyr')s.state='error';lastError=`${source}: ${s.lastError}`;});ws.on('close',(c,r)=>handleClose(source,c,r));}catch(e){s.socket=null;s.connected=false;s.lastError=e.message;scheduleReconnect(source,e.message);}}
+function currentMmsisForStatic(){
+  return Array.from(cache.values())
+    .filter(v=>/^\d{9}$/.test(String(v.mmsi||'')))
+    .sort((a,b)=>String(b.last_seen||'').localeCompare(String(a.last_seen||'')))
+    .map(v=>String(v.mmsi));
+}
+function sendStaticSubscriptions(ws,state){
+  const mmsis=currentMmsisForStatic();
+  // One live subscription + three static subscriptions = Pelyr's four-subscription connection limit.
+  const slots=3, batchSize=500;
+  state.staticMmsiCount=mmsis.length;
+  for(let i=0;i<slots;i++){
+    const start=((state.staticRotationIndex||0)*batchSize*slots + i*batchSize) % Math.max(mmsis.length,1);
+    let batch=mmsis.length ? mmsis.slice(start,start+batchSize) : [];
+    if(mmsis.length && batch.length<batchSize && start>0) batch=batch.concat(mmsis.slice(0,batchSize-batch.length));
+    ws.send(JSON.stringify({
+      type:'subscribe',
+      id:`static-${i}`,
+      fields:'full',
+      msg_types:[5,24],
+      include_positionless:true,
+      mmsi:batch
+    }));
+  }
+  state.staticLastSentAt=new Date().toISOString();
+}
+function rotateStaticSubscriptions(){
+  const s=streams.pelyr;
+  if(!s.socket || s.socket.readyState!==WebSocket.OPEN) return;
+  s.staticRotationIndex=((s.staticRotationIndex||0)+1)%Math.max(1,Math.ceil(Math.max(currentMmsisForStatic().length,1)/1500));
+  sendStaticSubscriptions(s.socket,s);
+}
+
 function connectPelyr(){
   const s=streams.pelyr;
   if(!PELYR_API_KEY){s.lastError='PELYR_API_KEY is not configured';s.state='not_configured';return;}
@@ -116,7 +183,13 @@ function connectPelyr(){
     const sub={type:'subscribe',id:'live',fields:'full',msg_types:[1,2,3,18,19]};
     if(STREAM_BOXES) sub.bbox=STREAM_BOXES.map(b=>({west:b[0][1],south:b[0][0],east:b[1][1],north:b[1][0]}));
     ws.send(JSON.stringify(sub));
+    // Names/callsigns/destinations live in AIS static messages (5/24), which are
+    // positionless. Pelyr supports up to 500 MMSIs per static subscription.
+    // Keep four rotating subscriptions so the bridge can enrich thousands of
+    // currently tracked vessels without subscribing to the entire world's static feed.
     state.lastSubscriptionAt=new Date().toISOString();
+    state.staticRotationIndex=0;
+    sendStaticSubscriptions(ws,state);
   },(d,state)=>{
     if(d.type==='welcome'){state.compressionEnabled=false;state.welcomeSources=d.sources||[];state.welcomeAt=new Date().toISOString();state.lastFrameType='welcome';return;}
     if(d.type==='subscribed'){state.state='subscribed';state.subscriptionConfirmed=true;state.reconnectAttempt=0;state.successfulSubscriptions++;state.effective=d.effective||null;state.subscriptionNotes=d.notes||[];state.subscribedAt=new Date().toISOString();state.lastFrameType='subscribed';return;}
@@ -124,6 +197,7 @@ function connectPelyr(){
     if(d.type==='notice'){state.lastNotice={code:d.code||null,message:d.message||null,at:new Date().toISOString()};state.lastFrameType='notice';return;}
     if(d.type==='error'){state.lastError=`Pelyr: ${String(d.message||d.code||'stream error')}`;state.lastFrameType='error';if(d.fatal){state.state='fatal';}return;}
     if(d.type==='position'){state.lastFrameType='position';consume('pelyr',d);}
+    if(d.type==='static'){state.lastFrameType='static';consume('pelyr',d);}
   });
 }
 
@@ -168,12 +242,12 @@ function connectSource(){connectPelyr();}
 
 
 const app=express();app.disable('x-powered-by');app.use(express.json({limit:'2mb'}));
-function streamHealth(s){return {connected:s.connected,subscriptionConfirmed:s.subscriptionConfirmed,totalMessages:s.totalMessages,lastMessageAt:s.lastMessageAt,connectedAt:s.connectedAt,disconnectedAt:s.disconnectedAt,reconnectAttempt:s.reconnectAttempt,nextReconnectAt:s.nextReconnectAt,lastClose:s.lastClose,lastError:s.lastError,successfulSubscriptions:s.successfulSubscriptions,state:s.state||undefined,cooldownUntil:s.cooldownUntil||undefined,lastHandshake:s.lastHandshake,lastHeartbeat:s.lastHeartbeat,dropped:s.dropped,welcomeAt:s.welcomeAt,subscribedAt:s.subscribedAt,lastFrameType:s.lastFrameType,lastNotice:s.lastNotice,lastApiRefreshAt:s.lastApiRefreshAt,lastApiStatus:s.lastApiStatus,lastApiError:s.lastApiError,detailRequests:s.detailRequests,detailHits:s.detailHits};}
-app.get('/',(req,res)=>res.json({ok:true,version:'12.0.0',name:'MaritimeScope Pelyr AIS Bridge',providers:['Pelyr OPEN-AIS'],mode:GLOBAL_STREAM?'pelyr-global-live-memory':'pelyr-regional-live-memory',globalStream:GLOBAL_STREAM,testMode:false,boxes:STREAM_BOXES,endpoints:['/health','/diagnostics','/vessels','/vessel','/search']}));
-app.get('/health',(req,res)=>res.json({ok:true,version:'12.0.0',providers:{pelyr:streamHealth(streams.pelyr)},totalMessages,cacheSize:cache.size,lastError,globalStream:GLOBAL_STREAM,boxes:STREAM_BOXES,testMode:false,aisStorage:'Render in-memory only; MySQL AIS cache disabled'}));
-app.get('/diagnostics',(req,res)=>res.json({ok:true,version:'11.1.0',time:new Date().toISOString(),config:{pelyrKeyConfigured:!!PELYR_API_KEY,bridgeTokenConfigured:!!BRIDGE_TOKEN,globalStream:GLOBAL_STREAM,allowGlobalBoxes:ALLOW_GLOBAL_BOXES,boxes:STREAM_BOXES,maxCache:MAX_CACHE},providers:{pelyr:{...streamHealth(streams.pelyr),mode:'token',httpsApi:!!PELYR_API_KEY}},data:{totalMessages,cacheSize:cache.size}}));
+function streamHealth(s){return {connected:s.connected,subscriptionConfirmed:s.subscriptionConfirmed,totalMessages:s.totalMessages,lastMessageAt:s.lastMessageAt,connectedAt:s.connectedAt,disconnectedAt:s.disconnectedAt,reconnectAttempt:s.reconnectAttempt,nextReconnectAt:s.nextReconnectAt,lastClose:s.lastClose,lastError:s.lastError,successfulSubscriptions:s.successfulSubscriptions,state:s.state||undefined,cooldownUntil:s.cooldownUntil||undefined,lastHandshake:s.lastHandshake,lastHeartbeat:s.lastHeartbeat,dropped:s.dropped,welcomeAt:s.welcomeAt,subscribedAt:s.subscribedAt,lastFrameType:s.lastFrameType,lastNotice:s.lastNotice,staticMmsiCount:s.staticMmsiCount||0,staticLastSentAt:s.staticLastSentAt||null,lastApiRefreshAt:s.lastApiRefreshAt,lastApiStatus:s.lastApiStatus,lastApiError:s.lastApiError,detailRequests:s.detailRequests,detailHits:s.detailHits};}
+app.get('/',(req,res)=>res.json({ok:true,version:'12.3.0',name:'MaritimeScope Pelyr AIS Bridge',providers:['Pelyr OPEN-AIS'],mode:GLOBAL_STREAM?'pelyr-global-live-memory':'pelyr-regional-live-memory',globalStream:GLOBAL_STREAM,testMode:false,boxes:STREAM_BOXES,endpoints:['/health','/diagnostics','/vessels','/vessel','/search']}));
+app.get('/health',(req,res)=>res.json({ok:true,version:'12.3.0',providers:{pelyr:streamHealth(streams.pelyr)},totalMessages,cacheSize:cache.size,lastError,globalStream:GLOBAL_STREAM,boxes:STREAM_BOXES,testMode:false,aisStorage:'Render in-memory only; MySQL AIS cache disabled'}));
+app.get('/diagnostics',(req,res)=>res.json({ok:true,version:'12.3.0',time:new Date().toISOString(),config:{pelyrKeyConfigured:!!PELYR_API_KEY,bridgeTokenConfigured:!!BRIDGE_TOKEN,globalStream:GLOBAL_STREAM,allowGlobalBoxes:ALLOW_GLOBAL_BOXES,boxes:STREAM_BOXES,maxCache:MAX_CACHE},providers:{pelyr:{...streamHealth(streams.pelyr),mode:'token',httpsApi:!!PELYR_API_KEY}},data:{totalMessages,cacheSize:cache.size}}));
 function matches(v,q){if(!q)return true;const x=q.toLowerCase();return [v.mmsi,v.ship_name,v.imo,v.callsign,v.destination].some(z=>String(z??'').toLowerCase().includes(x));}
-app.get('/vessels',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'',limit=Math.max(1,Math.min(2000,Number(req.query.limit)||1500));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.set('Cache-Control','no-store');res.json({ok:true,source:'Pelyr OPEN-AIS live working set',providers:['Pelyr OPEN-AIS'],vessels:rows,cacheSize:cache.size,storage:'memory-only'});});
+app.get('/vessels',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'',limit=Math.max(1,Math.min(15000,Number(req.query.limit)||15000));const rows=Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit);res.set('Cache-Control','no-store');res.json({ok:true,source:'Pelyr OPEN-AIS live working set',providers:['Pelyr OPEN-AIS'],vessels:rows,cacheSize:cache.size,storage:'memory-only'});});
 app.get('/search',(req,res)=>{if(!authorized(req,res))return;const q=cleanString(req.query.q,120)||'',limit=Math.max(1,Math.min(50,Number(req.query.limit)||10));res.set('Cache-Control','no-store');res.json({ok:true,vessels:Array.from(cache.values()).filter(v=>matches(v,q)).sort((a,b)=>String(b.last_seen).localeCompare(String(a.last_seen))).slice(0,limit),storage:'memory-only'});});
 app.get('/vessel',async(req,res)=>{
   if(!authorized(req,res))return;
@@ -199,4 +273,4 @@ app.get('/vessel',async(req,res)=>{
   }
 });
 app.get('/stats',(req,res)=>{if(!authorized(req,res))return;res.json({ok:true,cacheSize:cache.size,totalMessages,pelyr:streamHealth(streams.pelyr)});});
-app.listen(PORT,'0.0.0.0',()=>{console.log(`MaritimeScope Pelyr AIS bridge v12.0 listening on ${PORT}`);console.log(`Pelyr: ${!!PELYR_API_KEY?'configured':'NOT configured'}`);console.log(`Global stream: ${GLOBAL_STREAM}`);console.log(`Boxes: ${STREAM_BOXES?JSON.stringify(STREAM_BOXES):'WORLDWIDE (no bbox)'}`);setTimeout(()=>{connectPelyr();},PELYR_START_DELAY_MS); if(PELYR_API_REFRESH_MS>0 && !GLOBAL_STREAM) setInterval(()=>{refreshPelyrApi();},PELYR_API_REFRESH_MS); if(PELYR_API_REFRESH_MS>0 && !GLOBAL_STREAM) setTimeout(()=>{refreshPelyrApi();},PELYR_START_DELAY_MS+10000);});
+app.listen(PORT,'0.0.0.0',()=>{console.log(`MaritimeScope Pelyr AIS bridge v12.3 listening on ${PORT}`);console.log(`Pelyr: ${!!PELYR_API_KEY?'configured':'NOT configured'}`);console.log(`Global stream: ${GLOBAL_STREAM}`);console.log(`Boxes: ${STREAM_BOXES?JSON.stringify(STREAM_BOXES):'WORLDWIDE (no bbox)'}`);setTimeout(()=>{connectPelyr();},PELYR_START_DELAY_MS); setInterval(()=>rotateStaticSubscriptions(),STATIC_REFRESH_MS); if(PELYR_API_REFRESH_MS>0 && !GLOBAL_STREAM) setInterval(()=>{refreshPelyrApi();},PELYR_API_REFRESH_MS); if(PELYR_API_REFRESH_MS>0 && !GLOBAL_STREAM) setTimeout(()=>{refreshPelyrApi();},PELYR_START_DELAY_MS+10000);});
